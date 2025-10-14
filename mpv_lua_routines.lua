@@ -63,6 +63,7 @@ local MESSAGE_DISPLAY_TIME_DEFAULT = 15
 local DITCH_MODE = os.getenv("DITCH_MODE") and "DITCH" or "SNITCH"
 local message_display_time = tonumber(os.getenv("MESSAGE_DISPLAY_TIME")) or MESSAGE_DISPLAY_TIME_DEFAULT
 
+local DB_BUSY_TIMEOUT_MS = tonumber(os.getenv("MPV_DB_BUSY_TIMEOUT")) or 1000 -- Default to 1000ms
 -- File paths (These rely on the REQUIRED_ENV_VARS)
 local EDL_SNITCH_JOURNAL = SNITCH_DIR and (SNITCH_DIR.."/edl_journal.edl") or nil
 local NON_EDL_JOURNAL = SNITCH_DIR and (SNITCH_DIR.."/m3u_journal.m3u") or nil
@@ -121,6 +122,17 @@ end
 M.log("info", "History DB Path:", HISTORY_DB_PATH)
 M.log("info", "Library DB Path:", LIBRARY_DB_PATH)
 
+-- Shim for mp.utils.dir_exists for compatibility with mpv < 0.33.0
+local function dir_exists(path)
+    if utils.dir_exists then
+        return utils.dir_exists(path)
+    end
+    -- Fallback for older mpv versions.
+    -- os.rename returns true on success, or (nil, error_msg, error_code) on failure.
+    local ok, _, code = os.rename(path, path)
+    return ok or code == 13 -- 13 is EACCES (Permission denied), which implies it exists.
+end
+
 -- New Utility: Creates the directory for a file path if it doesn't exist
 local function create_dir_if_missing(file_path)
     local dir_path = file_path:match("(.*/)[^/]+$")
@@ -128,7 +140,10 @@ local function create_dir_if_missing(file_path)
         return true
     end
 
-    local status, err = utils.dir_exists(dir_path)
+    -- Check if the directory exists
+    local status, err = dir_exists(dir_path)
+    -- Check if dir_exists returned an error
+    
     if status then
         return true
     end
@@ -161,6 +176,12 @@ local function open_db(db_path, db_name)
         mp.abort_script(string.format("%s DB failed to open: %s", db_name, errmsg))
     end
 
+    -- Set a busy timeout to handle multiple mpv instances accessing the same DB file.
+    -- If the DB is locked, it will wait up to the specified timeout before returning a 'busy' error.
+    -- This is crucial for preventing "database is locked" errors in multi-instance scenarios.
+    db_handle:busy_timeout(DB_BUSY_TIMEOUT_MS)
+    M.log("info", "Database busy timeout set to", DB_BUSY_TIMEOUT_MS, "ms.")
+
     DB_CONNECTIONS[db_name] = db_handle
     M.log("info", db_name, "opened successfully.")
     return db_handle
@@ -169,11 +190,12 @@ end
 local function check_and_create_table(db)
     local check_table = "SELECT name FROM sqlite_master WHERE type='table' AND name='history_item';"
     local table_exists = false
-    local cursor = db:exec(check_table)
-    
-    if cursor then
-        table_exists = cursor:fetch() ~= nil
-        cursor:close()
+
+    M.log("info", "DB handle for table check:", tostring(db))
+
+    for row in db:nrows(check_table) do
+        table_exists = true
+        break
     end
 
     if not table_exists then
@@ -445,13 +467,15 @@ end
 
 -- --- Database Hook Functions ---
 
-function M.start_file()
-    M.log("info", "Attempting to acquire database connection for this MPV instance.")
-    
+function M.initialize()
+    M.log("info", "Initializing script and opening database connection.")
     local db = open_db(HISTORY_DB_PATH, "history")
     check_and_create_table(db)
-    
-    previous_chapter_time = 0 
+end
+
+function M.start_file()
+    -- Reset per-file state variables
+    previous_chapter_time = 0
 end
 
 function M.file_loaded()
@@ -496,14 +520,14 @@ function M.on_unload()
     local db = DB_CONNECTIONS.history
     if not db then return M.log("error", "History DB not connected in on_unload.") end
 
-    local time_pos = tonumber(mp.get_property("percent-pos"))
-    local current_id = tonumber(mp.get_property("script-opts/history-id"))
+    local time_pos = mp.get_property_number("percent-pos")
+    local current_id = mp.get_property_number("script-opts/history-id")
 
     if not current_id then
         return M.log("info", "No history ID found for current file. Skipping update.")
     end
     if time_pos == nil then
-        return M.log("info", "No time position found. Skipping update.")
+        return M.log("info", "No time position found on unload (likely during shutdown). Skipping update.")
     end
 
     local query = string.format([[
@@ -533,7 +557,7 @@ end
 
 -- 1. Check required environment variables and exit if missing.
 if not M.check_environment() then
-    -- Execution flow terminates here if variables are missing due to mp.abort_script
+    return -- Execution flow terminates here if variables are missing
 end
 
 -- 2. Initialization Logic (Runs only if environment check passes)
@@ -541,6 +565,9 @@ end
 mp.set_property("osd-align-y", "bottom")
 mp.set_property("osd-align-x", "center")
 mp.set_property("image-display-duration", message_display_time)
+
+-- Open database connections once for the entire session
+M.initialize()
 
 -- Load subtitles if available
 if subtitles_file then
