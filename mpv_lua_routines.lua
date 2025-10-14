@@ -1,5 +1,5 @@
--- mpv_db_handler_v2.lua
--- Combines SQLite history tracking with player control and file operations.
+-- mpv_db_handler_v4.lua
+-- Includes: Env check, Safe DB path handling (for --no-config), Dir creation, and combined player logic.
 
 local M = {}
 
@@ -17,24 +17,44 @@ local math = math
 
 -- --- Configuration: Environment Variables & Constants ---
 
--- STRICTLY REQUIRED ENVIRONMENT VARIABLES (Used for Snitch/Ditch output paths)
+-- STRICTLY REQUIRED ENVIRONMENT VARIABLES (Checked before script proceeds)
 local REQUIRED_ENV_VARS = {
     "BCHU",   -- Used for SNITCH_DIR (EDL/M3U output path)
     "EDLSRC", -- Used for DITCHED_FILE_PATH (directory for ditched.txt)
 }
 
+-- Safely determine the default database directory, handling --no-config.
+local default_db_path = (function()
+    local cfg = mp.find_config_file('.')
+    
+    if cfg then
+        -- Path found (e.g., /home/user/.config/mpv/mpv.conf)
+        -- We return the directory name (e.g., /home/user/.config/mpv/)
+        return cfg:match("(.*/)[^/]+$") or (cfg .. "/")
+    else
+        -- Fallback if mp.find_config_file() returns nil (due to --no-config)
+        local home = os.getenv("HOME") or os.getenv("USERPROFILE")
+        if home then
+            -- Fall back to a standard hidden directory in the user's home path
+            return home .. "/.mpv_db/"
+        else
+            -- Last resort: Fall back to /tmp/
+            return "/tmp/mpv_db/"
+        end
+    end
+end)()
+
+
 -- Database paths (These are NOT required as they have robust fallbacks)
 local ENV_HISTORY_DB = os.getenv("MPV_HISTORY_DB")
 local ENV_LIBRARY_DB = os.getenv("MPV_LIBRARY_DB")
-local default_db_path = (function()
-    local cfg = mp.find_config_file('.')
-    return cfg:sub(1, #cfg - 1)
-end)()
+
 local HISTORY_DB_PATH = ENV_HISTORY_DB or (default_db_path .. 'history.db')
 local LIBRARY_DB_PATH = ENV_LIBRARY_DB or (default_db_path .. 'library.db')
 
+
 -- dbx2.lua constants and environment variables
-local SNITCH_DIR = os.getenv("BCHU") or mp.get_property("working-directory") -- Fallback provided, but checked below
+local SNITCH_DIR = os.getenv("BCHU")
 local USCR = os.getenv("USCR")
 local subtitles_file = os.getenv("IMGSUBTITLES")
 
@@ -89,10 +109,7 @@ function M.check_environment()
     if #missing_vars > 0 then
         local error_msg = "FATAL: The following required environment variables are not set: " .. table.concat(missing_vars, ", ")
         M.log("error", error_msg)
-        
-        -- Use mp.abort_script() for a clean Lua exit within mpv
         mp.abort_script(error_msg)
-        -- The rest of the script is unreachable after mp.abort_script()
         return false 
     end
 
@@ -104,12 +121,46 @@ end
 M.log("info", "History DB Path:", HISTORY_DB_PATH)
 M.log("info", "Library DB Path:", LIBRARY_DB_PATH)
 
+-- New Utility: Creates the directory for a file path if it doesn't exist
+local function create_dir_if_missing(file_path)
+    local dir_path = file_path:match("(.*/)[^/]+$")
+    if not dir_path then
+        return true
+    end
+
+    local status, err = utils.dir_exists(dir_path)
+    if status then
+        return true
+    end
+
+    -- Attempt to create the directory recursively
+    local success = os.execute("mkdir -p " .. dir_path)
+
+    if success == 0 or success == true then
+        M.log("info", "Created missing database directory:", dir_path)
+        return true
+    else
+        M.log("error", "Failed to create directory:", dir_path, "Error code:", success)
+        return false
+    end
+end
+
+
 local function open_db(db_path, db_name)
+    M.log("info", "Attempting to open DB: " .. db_path)
+
+    -- CRASH PREVENTION: Ensure the directory exists before opening the file
+    if not create_dir_if_missing(db_path) then
+        mp.abort_script(string.format("%s DB failed to open: Directory creation failed.", db_name))
+        return nil, nil, "Directory not found/writable"
+    end
+
     local db_handle, errcode, errmsg = sqlite3.open(db_path)
     if not db_handle then
         M.log("error", db_name, "Failed to open:", errmsg)
-        error(string.format("%s DB failed to open: %s", db_name, errmsg))
+        mp.abort_script(string.format("%s DB failed to open: %s", db_name, errmsg))
     end
+
     DB_CONNECTIONS[db_name] = db_handle
     M.log("info", db_name, "opened successfully.")
     return db_handle
@@ -245,7 +296,6 @@ local function SNITCH_file()
         send_OSD("Unrecognised file type: "..path:gsub("\\", "/"), 2)
         return
     end
-    -- SNITCH_DIR check is implicitly handled by the REQUIRED_ENV_VARS check
 
     local SNITCHfilename = nil
     
