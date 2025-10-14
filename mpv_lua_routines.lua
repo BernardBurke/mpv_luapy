@@ -55,8 +55,6 @@ local LIBRARY_DB_PATH = ENV_LIBRARY_DB or (default_db_path .. 'library.db')
 
 -- dbx2.lua constants and environment variables
 local SNITCH_DIR = os.getenv("BCHU")
-local USCR = os.getenv("USCR")
-local subtitles_file = os.getenv("IMGSUBTITLES")
 
 local SNITCH_SEGMENT_LENGTH = 30
 local MESSAGE_DISPLAY_TIME_DEFAULT = 15
@@ -378,17 +376,13 @@ function M.ditch_or_snitch()
 end
 
 -- Subtitle/Chapter Handling
-local function write_subtitles(chaptime_length)
-    if SUBTITLES_ENABLED and line_count > 0 then
-        local msg_text = tostring(lines[step_count]):gsub("\r", "")
-        mp.osd_message(msg_text, chaptime_length)
-        step_count = (step_count % line_count) + 1
-    end
-end
 
 function M.new_chapter()
     local chapterlist = mp.get_property_native("chapter-list")
     local chapter = mp.get_property_native("chapter")
+
+    -- log the chapter change
+    M.log("info", "Chapter changed to:", tostring(chapter))
 
     if chapter and chapterlist and chapter + 1 <= #chapterlist then
         local chaptime_time = chapterlist[chapter + 1].time
@@ -402,7 +396,7 @@ function M.new_chapter()
             previous_chapter_time = 0
         end
 
-        write_subtitles(chaptime_length)
+        -- write_subtitles(chaptime_length)
     end
 end
 
@@ -455,7 +449,7 @@ function M.delete_me()
     
     local delete_handle = io.open('/tmp/deleteMe.sh', "a")
     if delete_handle then
-        local wrtString = "rm -v '"..filename.."'\n"
+        local wrtString = "if [ -f '"..filename.."' ]; then rm -v '"..filename.."'; fi\n"
         delete_handle:write(wrtString)
         delete_handle:close()
         M.log("info", "Wrote delete command for:", filename)
@@ -569,23 +563,6 @@ mp.set_property("image-display-duration", message_display_time)
 -- Open database connections once for the entire session
 M.initialize()
 
--- Load subtitles if available
-if subtitles_file then
-    local path_norm = subtitles_file:gsub("\\", "/")
-    if file_exists(path_norm) then
-        for line in io.lines(path_norm) do
-            local trimmed = all_trim(line)
-            if string.len(trimmed) >= 1 then
-                lines[#lines + 1] = trimmed
-                line_count = line_count + 1
-            end
-        end
-        SUBTITLES_ENABLED = line_count > 0
-        M.log("info", "Subtitles loaded:", line_count, "lines.")
-    else
-        M.log("info", "Subtitles file not found at:", path_norm)
-    end
-end
 
 -- 3. Register MPV Hooks
 mp.register_event("start-file", M.start_file)
