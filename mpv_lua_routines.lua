@@ -1,4 +1,4 @@
--- mpv_db_handler.lua
+-- mpv_db_handler_v2.lua
 -- Combines SQLite history tracking with player control and file operations.
 
 local M = {}
@@ -17,7 +17,13 @@ local math = math
 
 -- --- Configuration: Environment Variables & Constants ---
 
--- Database paths
+-- STRICTLY REQUIRED ENVIRONMENT VARIABLES (Used for Snitch/Ditch output paths)
+local REQUIRED_ENV_VARS = {
+    "BCHU",   -- Used for SNITCH_DIR (EDL/M3U output path)
+    "EDLSRC", -- Used for DITCHED_FILE_PATH (directory for ditched.txt)
+}
+
+-- Database paths (These are NOT required as they have robust fallbacks)
 local ENV_HISTORY_DB = os.getenv("MPV_HISTORY_DB")
 local ENV_LIBRARY_DB = os.getenv("MPV_LIBRARY_DB")
 local default_db_path = (function()
@@ -28,7 +34,7 @@ local HISTORY_DB_PATH = ENV_HISTORY_DB or (default_db_path .. 'history.db')
 local LIBRARY_DB_PATH = ENV_LIBRARY_DB or (default_db_path .. 'library.db')
 
 -- dbx2.lua constants and environment variables
-local SNITCH_DIR = os.getenv("BCHU") or mp.get_property("working-directory") -- Fallback if BCHU is unset
+local SNITCH_DIR = os.getenv("BCHU") or mp.get_property("working-directory") -- Fallback provided, but checked below
 local USCR = os.getenv("USCR")
 local subtitles_file = os.getenv("IMGSUBTITLES")
 
@@ -37,7 +43,7 @@ local MESSAGE_DISPLAY_TIME_DEFAULT = 15
 local DITCH_MODE = os.getenv("DITCH_MODE") and "DITCH" or "SNITCH"
 local message_display_time = tonumber(os.getenv("MESSAGE_DISPLAY_TIME")) or MESSAGE_DISPLAY_TIME_DEFAULT
 
--- File paths
+-- File paths (These rely on the REQUIRED_ENV_VARS)
 local EDL_SNITCH_JOURNAL = SNITCH_DIR and (SNITCH_DIR.."/edl_journal.edl") or nil
 local NON_EDL_JOURNAL = SNITCH_DIR and (SNITCH_DIR.."/m3u_journal.m3u") or nil
 local DITCHED_FILE_PATH = os.getenv("EDLSRC") and (os.getenv("EDLSRC").."/ditched.txt") or nil
@@ -52,10 +58,9 @@ local previous_chapter_time = 0
 local g_start_second = 0 -- For cutting
 local SUBTITLES_ENABLED = false
 
--- --- Centralized Logging Function (Modified from lsql_handler) ---
+-- --- Centralized Logging Function ---
 local function log_to_file(message)
     local log_message = os.date("%Y-%m-%d %H:%M:%S") .. " - " .. message
-    -- We will rely on mp.msg for in-terminal logging and only use file logging for debugging
     local log_handle, err = io.open(LOG_FILE, "a")
     if log_handle then
         log_handle:write(log_message .. "\n")
@@ -70,11 +75,31 @@ function M.log(level, ...)
     else
         msg.info("[DB/CTL] " .. message)
     end
-    -- Use file logging only for detailed debugging if necessary
-    -- log_to_file(string.format("[%s] %s", string.upper(level), message))
 end
 
--- --- Database Utility Functions (From lsql_handler) ---
+-- --- Module: Environment Check ---
+function M.check_environment()
+    local missing_vars = {}
+    for _, var_name in ipairs(REQUIRED_ENV_VARS) do
+        if not os.getenv(var_name) then
+            table.insert(missing_vars, var_name)
+        end
+    end
+
+    if #missing_vars > 0 then
+        local error_msg = "FATAL: The following required environment variables are not set: " .. table.concat(missing_vars, ", ")
+        M.log("error", error_msg)
+        
+        -- Use mp.abort_script() for a clean Lua exit within mpv
+        mp.abort_script(error_msg)
+        -- The rest of the script is unreachable after mp.abort_script()
+        return false 
+    end
+
+    return true
+end
+
+-- --- Database Utility Functions ---
 
 M.log("info", "History DB Path:", HISTORY_DB_PATH)
 M.log("info", "Library DB Path:", LIBRARY_DB_PATH)
@@ -91,7 +116,6 @@ local function open_db(db_path, db_name)
 end
 
 local function check_and_create_table(db)
-    -- Check if table exists
     local check_table = "SELECT name FROM sqlite_master WHERE type='table' AND name='history_item';"
     local table_exists = false
     local cursor = db:exec(check_table)
@@ -120,7 +144,7 @@ local function check_and_create_table(db)
     end
 end
 
--- --- MPV/File Utility Functions (Refactored from dbx2.lua) ---
+-- --- MPV/File Utility Functions ---
 
 local function send_OSD(message_string, seconds)
     local message_str = mp.get_property("osd-ass-cc/0")..message_string..mp.get_property("osd-ass-cc/1")
@@ -151,10 +175,9 @@ local function create_edl_if_missing(bfile)
 end
 
 local function get_file_class(filename)
-    -- More robust file extension matching
     local ext = filename:match("^.+(%..+)$")
     if not ext then return "unrecognised" end
-    ext = string.lower(ext:sub(2)) -- Remove dot and lowercase
+    ext = string.lower(ext:sub(2))
     
     if ext == "edl" then return "edl" end
     if ext == "mkv" or ext == "mp4" or ext == "avi" or ext == "webm" or ext == "wmv" then return "video" end
@@ -168,7 +191,7 @@ local function all_trim(s)
     return s:match("^%s*(.-)%s*$")
 end
 
--- --- Player Control Functions (Refactored from dbx2.lua) ---
+-- --- Player Control Functions ---
 
 local function write_that_SNITCH(SNITCHfilename, record, journal_type, path)
     if not SNITCHfilename or not record or not SNITCH_DIR then 
@@ -187,7 +210,6 @@ local function write_that_SNITCH(SNITCHfilename, record, journal_type, path)
         success = false
     end
 
-    -- Update journal files
     if success and journal_type == "edl" and EDL_SNITCH_JOURNAL then
         create_edl_if_missing(EDL_SNITCH_JOURNAL)
         local journal_handle = io.open(EDL_SNITCH_JOURNAL, "a")
@@ -223,10 +245,7 @@ local function SNITCH_file()
         send_OSD("Unrecognised file type: "..path:gsub("\\", "/"), 2)
         return
     end
-    if not SNITCH_DIR then
-        send_OSD("SNITCH FAILED: BCHU (SNITCH_DIR) not set.", 3)
-        return
-    end
+    -- SNITCH_DIR check is implicitly handled by the REQUIRED_ENV_VARS check
 
     local SNITCHfilename = nil
     
@@ -300,14 +319,12 @@ function M.new_chapter()
     local chapter = mp.get_property_native("chapter")
 
     if chapter and chapterlist and chapter + 1 <= #chapterlist then
-        -- Use chapter property and list to calculate length
         local chaptime_time = chapterlist[chapter + 1].time
         chaptime_time = chaptime_time or 0 
         
         local chaptime_length = chaptime_time - previous_chapter_time
         previous_chapter_time = chaptime_time
         
-        -- If current chapter is 0, length is typically the first chapter time
         if chapter == 0 and chaptime_time > 0 then
             chaptime_length = chaptime_time
             previous_chapter_time = 0
@@ -376,16 +393,14 @@ function M.delete_me()
     end
 end
 
--- --- Database Hook Functions (From lsql_handler, now using combined utilities) ---
+-- --- Database Hook Functions ---
 
 function M.start_file()
     M.log("info", "Attempting to acquire database connection for this MPV instance.")
     
-    -- Connect to history DB and ensure table exists
     local db = open_db(HISTORY_DB_PATH, "history")
     check_and_create_table(db)
     
-    -- Reset chapter time tracking for new file
     previous_chapter_time = 0 
 end
 
@@ -398,7 +413,6 @@ function M.file_loaded()
     local title = mp.get_property("media-title") or "N/A"
     local date_str = os.date("%Y-%m-%d %H:%M")
 
-    -- Sanitize inputs using double quotes for SQLite
     local safe_path = string.gsub(path, "'", "''")
     local safe_filename = string.gsub(filename, "'", "''")
     local safe_title = string.gsub(title, "'", "''")
@@ -421,7 +435,7 @@ function M.file_loaded()
     end, nil)
     
     if res == sqlite3.OK and last_id then
-        mp.set_property_number("script-opts/history-id", last_id) -- PER-INSTANCE STORAGE
+        mp.set_property_number("script-opts/history-id", last_id)
         M.log("info", "New history ID recorded in MPV property:", last_id)
     else
         M.log("error", "Failed to insert history item:", db:errmsg())
@@ -432,14 +446,13 @@ function M.on_unload()
     local db = DB_CONNECTIONS.history
     if not db then return M.log("error", "History DB not connected in on_unload.") end
 
-    -- Use percent-pos (0-100) for robust saving
     local time_pos = tonumber(mp.get_property("percent-pos"))
     local current_id = tonumber(mp.get_property("script-opts/history-id"))
 
     if not current_id then
         return M.log("info", "No history ID found for current file. Skipping update.")
     end
-    if time_pos == nil then -- Check for nil, as 0% is a valid position
+    if time_pos == nil then
         return M.log("info", "No time position found. Skipping update.")
     end
 
@@ -466,8 +479,14 @@ function M.shutdown()
     end
 end
 
--- --- Initialization Logic (Runs once on script load) ---
+-- --- EXECUTION FLOW ---
 
+-- 1. Check required environment variables and exit if missing.
+if not M.check_environment() then
+    -- Execution flow terminates here if variables are missing due to mp.abort_script
+end
+
+-- 2. Initialization Logic (Runs only if environment check passes)
 -- OSD properties
 mp.set_property("osd-align-y", "bottom")
 mp.set_property("osd-align-x", "center")
@@ -491,18 +510,15 @@ if subtitles_file then
     end
 end
 
--- --- Register MPV Hooks ---
-
--- DB History Hooks (From lsql_handler)
+-- 3. Register MPV Hooks
 mp.register_event("start-file", M.start_file)
 mp.register_event("file-loaded", M.file_loaded)
 mp.add_hook("on_unload", 50, M.on_unload)
 mp.register_event("shutdown", M.shutdown)
 
--- Player Control Observers/Hooks (From dbx2.lua)
 mp.observe_property("chapter", "number", M.new_chapter)
 
--- Key bindings (From dbx2.lua)
+-- Key bindings
 mp.add_key_binding("D", "toggle_ditch_snitch", M.toggle_ditch_snitch, {repeatable=true})
 mp.add_key_binding("MBTN_Right", "ditch_or_snitch", M.ditch_or_snitch, {repeatable=true})
 mp.add_key_binding("KP1", "start_cut", M.start_cut, {repeatable=true})
