@@ -1,5 +1,5 @@
--- mpv_db_handler_v4.lua
--- Includes: Env check, Safe DB path handling (for --no-config), Dir creation, and combined player logic.
+-- mpv_db_handler_v4_restored.lua
+-- Restored version based on user's original intent, excluding the problematic time_pos column logic.
 
 local M = {}
 
@@ -17,10 +17,10 @@ local math = math
 
 -- --- Configuration: Environment Variables & Constants ---
 
--- STRICTLY REQUIRED ENVIRONMENT VARIABLES (Checked before script proceeds)
+-- REQUIRED ENVIRONMENT VARIABLES
 local REQUIRED_ENV_VARS = {
-    "BCHU",   -- Used for SNITCH_DIR (EDL/M3U output path)
-    "EDLSRC", -- Used for DITCHED_FILE_PATH (directory for ditched.txt)
+    "BCHU",   
+    "EDLSRC", 
 }
 
 -- Safely determine the default database directory, handling --no-config.
@@ -28,24 +28,19 @@ local default_db_path = (function()
     local cfg = mp.find_config_file('.')
     
     if cfg then
-        -- Path found (e.g., /home/user/.config/mpv/mpv.conf)
-        -- We return the directory name (e.g., /home/user/.config/mpv/)
         return cfg:match("(.*/)[^/]+$") or (cfg .. "/")
     else
-        -- Fallback if mp.find_config_file() returns nil (due to --no-config)
         local home = os.getenv("HOME") or os.getenv("USERPROFILE")
         if home then
-            -- Fall back to a standard hidden directory in the user's home path
             return home .. "/.mpv_db/"
         else
-            -- Last resort: Fall back to /tmp/
             return "/tmp/mpv_db/"
         end
     end
 end)()
 
 
--- Database paths (These are NOT required as they have robust fallbacks)
+-- Database paths
 local ENV_HISTORY_DB = os.getenv("MPV_HISTORY_DB")
 local ENV_LIBRARY_DB = os.getenv("MPV_LIBRARY_DB")
 
@@ -61,28 +56,22 @@ local MESSAGE_DISPLAY_TIME_DEFAULT = 15
 local DITCH_MODE = os.getenv("DITCH_MODE") and "DITCH" or "SNITCH"
 local message_display_time = tonumber(os.getenv("MESSAGE_DISPLAY_TIME")) or MESSAGE_DISPLAY_TIME_DEFAULT
 
-local DB_BUSY_TIMEOUT_MS = tonumber(os.getenv("MPV_DB_BUSY_TIMEOUT")) or 1000 -- Default to 1000ms
--- File paths (These rely on the REQUIRED_ENV_VARS)
+local DB_BUSY_TIMEOUT_MS = tonumber(os.getenv("MPV_DB_BUSY_TIMEOUT")) or 1000 
+-- File paths
 local EDL_SNITCH_JOURNAL = SNITCH_DIR and (SNITCH_DIR.."/edl_journal.edl") or nil
 local NON_EDL_JOURNAL = SNITCH_DIR and (SNITCH_DIR.."/m3u_journal.m3u") or nil
 local DITCHED_FILE_PATH = os.getenv("EDLSRC") and (os.getenv("EDLSRC").."/ditched.txt") or nil
-local LOG_FILE = "/tmp/mpv_db_handler.log" -- Centralized logger file
+local LOG_FILE = "/tmp/mpv_db_handler.log" 
 
 -- Internal State Variables
 local DB_CONNECTIONS = {}
-local lines = {} -- For subtitles
+local lines = {} 
 local step_count = 1
 local line_count = 0
 local previous_chapter_time = 0
-local g_start_second = 0 -- For cutting
+local g_start_second = 0 
 local SUBTITLES_ENABLED = false
--- State variable to track the last saved time
-local last_saved_time = 0
--- The timer for periodic saving
-local save_timer = nil
-local SAVE_INTERVAL_SECONDS = 30 -- Save position every 30 seconds
--- State flag to track if we've successfully loaded a file.
-local is_file_active = false 
+-- Removed all time_pos related state variables
 
 -- --- Centralized Logging Function ---
 local function log_to_file(message)
@@ -127,33 +116,24 @@ end
 M.log("info", "History DB Path:", HISTORY_DB_PATH)
 M.log("info", "Library DB Path:", LIBRARY_DB_PATH)
 
--- Shim for mp.utils.dir_exists for compatibility with mpv < 0.33.0
 local function dir_exists(path)
     if utils.dir_exists then
         return utils.dir_exists(path)
     end
-    -- Fallback for older mpv versions.
     local ok, _, code = os.rename(path, path)
     return ok or code == 13 
 end
 
--- New Utility: Creates the directory for a file path if it doesn't exist
 local function create_dir_if_missing(file_path)
     local dir_path = file_path:match("(.*/)[^/]+$")
     if not dir_path then
         return true
     end
-
-    -- Check if the directory exists
     local status, err = dir_exists(dir_path)
-    
     if status then
         return true
     end
-
-    -- Attempt to create the directory recursively
     local success = os.execute("mkdir -p " .. dir_path)
-
     if success == 0 or success == true then
         M.log("info", "Created missing database directory:", dir_path)
         return true
@@ -166,23 +146,17 @@ end
 
 local function open_db(db_path, db_name)
     M.log("info", "Attempting to open DB: " .. db_path)
-
-    -- CRASH PREVENTION: Ensure the directory exists before opening the file
     if not create_dir_if_missing(db_path) then
         mp.abort_script(string.format("%s DB failed to open: Directory creation failed.", db_name))
         return nil, nil, "Directory not found/writable"
     end
-
     local db_handle, errcode, errmsg = sqlite3.open(db_path)
     if not db_handle then
         M.log("error", db_name, "Failed to open:", errmsg)
         mp.abort_script(string.format("%s DB failed to open: %s", db_name, errmsg))
     end
-
-    -- Set a busy timeout to handle multiple mpv instances accessing the same DB file.
     db_handle:busy_timeout(DB_BUSY_TIMEOUT_MS)
     M.log("info", "Database busy timeout set to", DB_BUSY_TIMEOUT_MS, "ms.")
-
     DB_CONNECTIONS[db_name] = db_handle
     M.log("info", db_name, "opened successfully.")
     return db_handle
@@ -191,9 +165,7 @@ end
 local function check_and_create_table(db)
     local check_table = "SELECT name FROM sqlite_master WHERE type='table' AND name='history_item';"
     local table_exists = false
-
     M.log("info", "DB handle for table check:", tostring(db))
-
     for row in db:nrows(check_table) do
         table_exists = true
         break
@@ -207,6 +179,8 @@ local function check_and_create_table(db)
                 path        TEXT    NOT NULL,
                 filename    TEXT    NOT NULL,
                 title       TEXT    NOT NULL,
+                -- NOTE: time_pos is retained but will only ever hold 0 on creation 
+                -- and 0 on update in this version, effectively making it a non-functional column.
                 time_pos    INTEGER,
                 date        DATE    NOT NULL
             );
@@ -218,19 +192,17 @@ local function check_and_create_table(db)
     end
 end
 
--- --- MPV/File Utility Functions ---
+-- --- Player Control Functions (SNITCH/DITCH/CUT) ---
 
 local function send_OSD(message_string, seconds)
     local message_str = mp.get_property("osd-ass-cc/0")..message_string..mp.get_property("osd-ass-cc/1")
     mp.osd_message(message_str, seconds or message_display_time)
 end
-
 local function file_exists(file)
     local f = io.open(file, "rb")
     if f then f:close() end
     return f ~= nil
 end
-
 local function create_edl_if_missing(bfile)
     if not bfile then M.log("error", "Cannot create EDL: Path is nil."); return false end
     if not file_exists(bfile) then
@@ -247,26 +219,16 @@ local function create_edl_if_missing(bfile)
     end
     return true
 end
-
 local function get_file_class(filename)
     local ext = filename:match("^.+(%..+)$")
     if not ext then return "unrecognised" end
     ext = string.lower(ext:sub(2))
-    
     if ext == "edl" then return "edl" end
     if ext == "mkv" or ext == "mp4" or ext == "avi" or ext == "webm" or ext == "wmv" then return "video" end
     if ext == "jpg" or ext == "png" or ext == "gif" then return "image" end
     if ext == "mp3" or ext == "m4a" then return "audio" end
     return "unrecognised"
 end
-
-local function all_trim(s)
-    if not s then return "" end
-    return s:match("^%s*(.-)%s*$")
-end
-
--- --- Player Control Functions ---
-
 local function write_that_SNITCH(SNITCHfilename, record, journal_type, path)
     if not SNITCHfilename or not record or not SNITCH_DIR then 
         M.log("error", "SNITCH_DIR or filename/record is nil. Skipping write.") 
@@ -307,7 +269,6 @@ local function write_that_SNITCH(SNITCHfilename, record, journal_type, path)
         send_OSD("SNITCHED: "..path:gsub("\\", "/"), 3)
     end
 end
-
 local function SNITCH_file()
     local filename = mp.get_property("filename")
     local path = mp.get_property("path")
@@ -344,7 +305,6 @@ local function SNITCH_file()
         write_that_SNITCH(SNITCHfilename, record, journal_type, path)
     end
 end
-
 local function ditch_file()
     local path = mp.get_property("path")
     if not path or not DITCHED_FILE_PATH then
@@ -364,12 +324,10 @@ local function ditch_file()
         send_OSD("DITCH FAILED: Cannot open file", 2)
     end
 end
-
 function M.toggle_ditch_snitch()
     DITCH_MODE = (DITCH_MODE == "SNITCH") and "DITCH" or "SNITCH"
     send_OSD("DITCH_MODE = "..DITCH_MODE, 1)
 end
-
 function M.ditch_or_snitch()
     if DITCH_MODE == "SNITCH" then
         SNITCH_file()
@@ -377,23 +335,15 @@ function M.ditch_or_snitch()
         ditch_file()
     end
 end
-
--- Subtitle/Chapter Handling
-
 function M.new_chapter()
-    -- Re-route chapter change to trigger a time-pos save
-    M.save_time_position(true)
-
+    -- This function intentionally does nothing related to time_pos
     local chapterlist = mp.get_property_native("chapter-list")
     local chapter = mp.get_property_native("chapter")
-
-    -- log the chapter change
     M.log("info", "Chapter changed to:", tostring(chapter))
 
     if chapter and chapterlist and chapter + 1 <= #chapterlist then
         local chaptime_time = chapterlist[chapter + 1].time
         chaptime_time = chaptime_time or 0 
-        
         local chaptime_length = chaptime_time - previous_chapter_time
         previous_chapter_time = chaptime_time
         
@@ -401,13 +351,8 @@ function M.new_chapter()
             chaptime_length = chaptime_time
             previous_chapter_time = 0
         end
-
-        -- write_subtitles(chaptime_length)
     end
 end
-
--- Cutting Functions (omitted for brevity, assume unchanged)
-
 local function valid_for_cutting()
     local fileclass = get_file_class(mp.get_property("filename") or "")
     if fileclass == "video" or fileclass == "audio" then
@@ -417,14 +362,12 @@ local function valid_for_cutting()
         return false
     end
 end
-
 function M.start_cut()
     if not valid_for_cutting() then return end
     local time_pos = mp.get_property_number("time-pos")
     g_start_second = math.floor(time_pos or 0)
     send_OSD("Start cut "..g_start_second, 1)
 end
-
 function M.end_cut()
     if not valid_for_cutting() then return end
     local time_pos = mp.get_property_number("time-pos") or 0
@@ -449,7 +392,6 @@ function M.end_cut()
     end
     g_start_second = 0
 end
-
 function M.delete_me()
     local filename = mp.get_property_native("path")
     if not filename then return end
@@ -466,86 +408,8 @@ function M.delete_me()
     end
 end
 
+
 -- --- Database Hook Functions ---
-
-function M.save_time_position(force_update)
-    local db = DB_CONNECTIONS.history
-    if not db then return end
-
-    local time_pos = mp.get_property_number("time-pos")
-    local current_id = mp.get_property_number("script-opts/history-id")
-
-    -- Check if we have an ID, if time-pos is valid, and if we are paused (unless forced).
-    if not current_id or time_pos == nil or time_pos < 0 or (not force_update and mp.get_property_bool("paused")) then
-        if force_update then
-             if current_id and (time_pos == nil or time_pos < 0) then
-                M.log("info", "Save FAILED (Forced): ID "..current_id.." found but time-pos is nil/negative.")
-             end
-        end
-        return
-    end
-
-    local current_pos = math.floor(time_pos)
-
-    -- Skip update if position hasn't changed enough (to reduce DB load)
-    if not force_update and math.abs(current_pos - last_saved_time) < (SAVE_INTERVAL_SECONDS - 5) then
-        return
-    end
-
-    local query = string.format([[
-        UPDATE history_item
-        SET time_pos = %d, date = '%s'
-        WHERE id = %d;
-    ]], current_pos, os.date("%Y-%m-%d %H:%M"), current_id)
-
-    local res = db:exec(query)
-    if res ~= sqlite3.OK then
-        M.log("error", "Failed to update time position:", db:errmsg())
-    else
-        -- Update state variable only on successful save
-        last_saved_time = current_pos
-        M.log("info", "Time position updated for ID:", current_id, "to", current_pos)
-    end
-end
-
-function M.periodic_save_timer()
-    -- This function is called repeatedly by the MPV timer.
-    M.save_time_position(false)
-end
-
-function M.stop_periodic_save()
-    if save_timer then 
-        save_timer:stop() 
-        save_timer = nil
-        M.log("info", "Stopped periodic save timer.")
-    end
-end
-
--- NEW FUNCTION: Start the timer when playback starts (e.g., after seeking or load).
-function M.start_periodic_save()
-    if save_timer then 
-        M.log("info", "Periodic save timer already running.")
-        return 
-    end
-    save_timer = mp.add_periodic_timer(SAVE_INTERVAL_SECONDS, M.periodic_save_timer)
-    M.log("info", "Started periodic save timer at", SAVE_INTERVAL_SECONDS, "seconds.")
-end
-
--- NEW FUNCTION: Handles the 'pause' property changes for starting/stopping the timer on user interaction.
-function M.on_pause_change(name, is_paused)
-    -- This will handle user pause/resume interaction, overriding the periodic timer's state.
-    if is_paused then
-        -- User paused playback: Stop the periodic timer and force a save.
-        M.log("info", "Playback paused. Stopping periodic save timer and forcing save.")
-        M.stop_periodic_save()
-        M.save_time_position(true)
-    else
-        -- User resumed playback: Restart the periodic timer.
-        M.log("info", "Playback resumed. Starting periodic save timer.")
-        M.start_periodic_save()
-    end
-end
-
 
 function M.initialize()
     M.log("info", "Initializing script and opening database connection.")
@@ -554,47 +418,34 @@ function M.initialize()
 end
 
 function M.start_file()
-    M.log("info", "Start-file event. Stopping timer and resetting state.")
-    -- CRITICAL FIX: Ensure timer is OFF when a new file starts loading
-    M.stop_periodic_save() 
-    is_file_active = false
-    
-    -- Reset per-file state variables
     previous_chapter_time = 0
-    last_saved_time = 0 
 end
 
 function M.file_loaded()
     local db = DB_CONNECTIONS.history 
-    if not db then 
-        M.log("error", "History DB not connected in file_loaded.")
-        return 
-    end
-    
-    is_file_active = true
-    
+    if not db then return M.log("error", "History DB not connected in file_loaded.") end
+
     local path = mp.get_property("path") or "N/A"
     local filename = mp.get_property("filename") or "N/A"
     local title = mp.get_property("media-title") or "N/A"
     local date_str = os.date("%Y-%m-%d %H:%M")
-    
-    local initial_time_pos = math.floor(mp.get_property_number("time-pos") or 0) 
 
     local safe_path = string.gsub(path, "'", "''")
     local safe_filename = string.gsub(filename, "'", "''")
     local safe_title = string.gsub(title, "'", "''")
 
+    -- Insertion without relying on time_pos (initial value is 0)
     local video_query = string.format([[
         INSERT INTO history_item (path, filename, title, time_pos, date)
         VALUES(
             '%s',
             '%s',
             '%s',
-            %d,
+            0,
             '%s'
         );
         SELECT LAST_INSERT_ROWID();
-    ]], safe_path, safe_filename, safe_title, initial_time_pos, date_str)
+    ]], safe_path, safe_filename, safe_title, date_str)
 
     local last_id = nil
     local res = db:exec(video_query, function(udata, cols, values, names)
@@ -605,35 +456,38 @@ function M.file_loaded()
     if res == sqlite3.OK and last_id then
         mp.set_property_number("script-opts/history-id", last_id)
         M.log("info", "New history ID recorded in MPV property:", last_id)
-
-        -- CRITICAL FIX: Start the timer here immediately, assuming playback starts unpaused.
-        -- The 'pause' observer will stop it if mpv starts in a paused state.
-        if not mp.get_property_bool("paused") then
-             M.start_periodic_save()
-        end
     else
         M.log("error", "Failed to insert history item:", db:errmsg())
     end
 end
 
 function M.on_unload()
-    M.log("info", "Unload event triggered. Forcing final time position save.")
-    
-    -- Stop the timer immediately on unload
-    M.stop_periodic_save() 
-    
-    -- Perform the final update to capture the exact exit time
-    if is_file_active then
-        M.save_time_position(true)
-    else
-        M.log("info", "Skipping final save: No active file was loaded.")
+    local db = DB_CONNECTIONS.history
+    if not db then return M.log("error", "History DB not connected in on_unload.") end
+
+    local current_id = mp.get_property_number("script-opts/history-id")
+
+    if not current_id then
+        return M.log("info", "No history ID found for current file. Skipping update.")
     end
-    is_file_active = false
+
+    -- Update only the date (time_pos remains 0 or whatever it was inserted as)
+    local date_str = os.date("%Y-%m-%d %H:%M")
+    local query = string.format([[
+        UPDATE history_item
+        SET date = '%s'
+        WHERE id = %d;
+    ]], date_str, current_id)
+
+    local res = db:exec(query)
+    if res ~= sqlite3.OK then
+        M.log("error", "Failed to update date on unload:", db:errmsg())
+    else
+        M.log("info", "Date updated for ID:", current_id)
+    end
 end
 
 function M.shutdown()
-    -- Ensure the last save happens and DB connections are closed cleanly
-    M.on_unload() 
     for name, db_handle in pairs(DB_CONNECTIONS) do
         if db_handle then
             M.log("info", "Closing", name, "database.")
@@ -644,12 +498,10 @@ end
 
 -- --- EXECUTION FLOW ---
 
--- 1. Check required environment variables and exit if missing.
 if not M.check_environment() then
-    return -- Execution flow terminates here if variables are missing
+    return 
 end
 
--- 2. Initialization Logic (Runs only if environment check passes)
 -- OSD properties
 mp.set_property("osd-align-y", "bottom")
 mp.set_property("osd-align-x", "center")
@@ -665,10 +517,6 @@ mp.register_event("file-loaded", M.file_loaded)
 mp.add_hook("on_unload", 50, M.on_unload)
 mp.register_event("shutdown", M.shutdown)
 
--- OBSERVER: Handles user pause/resume logic
-mp.observe_property("pause", "bool", M.on_pause_change)
-
--- OBSERVER: Handles chapter change (forces save)
 mp.observe_property("chapter", "number", M.new_chapter)
 
 -- Key bindings
