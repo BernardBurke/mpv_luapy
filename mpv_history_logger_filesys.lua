@@ -1,7 +1,7 @@
 -- mpv_history_logger_v3.lua
--- Goal: Add Snap (KP0) and Gold Key (g) functionality.
--- FIXES INCLUDED: Added script_is_loaded flag in M.log and pcall wrapper
--- to prevent silent exit caused by environment/metadata issues during audio playback.
+-- Goal: Add Snap (KP0) and Gold Key (g) functionality with robust audio input.
+-- FIXES INCLUDED: 1. VO-Force using 'options-add vo null' for audio-only stability.
+-- 2. Deferred (timeout) key binding. 3. Robust anonymous function wrapping for bindings.
 
 local M = {}
 
@@ -27,14 +27,14 @@ local SNITCH_DIR = os.getenv("BCHU")
 local EDL_SNITCH_JOURNAL = SNITCH_DIR and (SNITCH_DIR.."/edl_journal.edl") or nil
 local NON_EDL_JOURNAL = SNITCH_DIR and (SNITCH_DIR.."/m3u_journal.m3u") or nil
 local DITCHED_FILE_PATH = os.getenv("EDLSRC") and (os.getenv("EDLSRC").."/ditched.txt") or nil
-local SNITCH_SEGMENT_LENGTH = 30 -- Used in your original SNITCH_file function
+local SNITCH_SEGMENT_LENGTH = 30 
 
 -- Internal State Variables
 local execution_context = "UNKNOWN"
 local previous_file_duration = 0
 local current_file_path = "N/A"
 local g_start_second = 0 
-local script_is_loaded = false -- NEW: Flag to control console logging during setup
+local script_is_loaded = false -- Flag to control console logging during setup
 
 local VIDEO_EXTENSIONS = {
     ["mkv"] = true, ["mp4"] = true, ["avi"] = true, ["webm"] = true, 
@@ -94,8 +94,6 @@ local function get_file_class(filename)
     local ext = ext_with_dot and string.lower(ext_with_dot:sub(2))
     
     if not ext then return "unrecognised" end
-
-    -- M.log("info", "File extension found is ---------------------------------------------------------:", ext) -- Removed redundant log
     
     if ext == "edl" then return "edl" 
     elseif VIDEO_EXTENSIONS[ext] then
@@ -137,10 +135,7 @@ end
 
 -- Simplified stub for EDL record retrieval (requires reading and parsing the file)
 local function get_the_edl_record(edl_path, chapter_number)
-    -- In a real scenario, this reads the EDL file and returns the Nth record.
-    -- For now, we return a mock record to allow the goldKey logic to execute.
     M.log("warn", "STUB: Returning mock EDL record for path:", edl_path)
-    -- Format: path, start_time, duration
     return edl_path .. ",10,60" 
 end
 
@@ -194,10 +189,8 @@ function M.end_cut()
     if not valid_for_cutting() then return end
     
     local current_time_pos = get_safe_time_pos()
-    -- FIX: Stop second should be the current time, and duration is (current_time - g_start_second)
-    local stop_second = current_time_pos -- The end time of the cut
-    local cut_duration = stop_second - g_start_second
-
+    local cut_duration = current_time_pos - g_start_second
+    
     if cut_duration <= 0 then
         M.log("warn", "CUT: End time is before or same as start time. Cut aborted.")
         send_OSD("End time is before or same as start time. Cut aborted.", 3)
@@ -206,7 +199,6 @@ function M.end_cut()
     end
 
     local path = mp.get_property("path")
-    -- EDL format: path, start_time, duration
     local str_record = path..","..g_start_second..","..cut_duration.."\n"
 
     local SNITCHfilename = "manual_cut_"..os.date('%d_%m_%y_%H')..".edl"
@@ -230,13 +222,12 @@ function M.end_cut()
     send_OSD("Ready for next Cut", 2)
 end
 
--- --- New Functionality: Snap and Gold Key ---
+-- --- New Functionality: Snap and Gold Key (Simplified) ---
 
 function M.snap_SNITCH()
     local filename = mp.get_property("filename")
     local path = mp.get_property("path")
     local fileclass = get_file_class(filename)
-    local record = nil
     
     M.log("info", "SNAP: Snapping file:", path)
 
@@ -266,31 +257,20 @@ function M.snap_SNITCH()
         CALL_OS = "mpv --screen=0 --fs-screen=0 --volume=10 --start="..start_second..' "'..file_name_only..'"'
     end
 
-   -- In M.snap_SNITCH:
-    -- ...
     if CALL_OS then
         M.log("info", "SNAP: Executing OS command:", CALL_OS)
         send_OSD("Snapping to new MPV instance...", 2)
         
-        -- Pause current MPV instance before spawning a new one
         mp.command("keypress SPACE")
         
-        -- Define a unique log file path in /tmp/
         local SNAP_LOG_FILE = "/tmp/mpv_snap_log_" .. os.time() .. ".log"
-        M.log("info", "SNAP: Output log is redirected to:", SNAP_LOG_FILE)
-        
-        -- FIX: Use nohup and redirect stdout (1) and stderr (2) to the custom log file, 
-        -- and finally run it in the background (&).
         local background_command = string.format(
             "nohup %s > %s 2>&1 &",
             CALL_OS,
             SNAP_LOG_FILE
         )
-        
-        -- Execute the new MPV instance asynchronously
         os.execute(background_command)
     end
-
 end
 
 function M.goldKey()
@@ -361,7 +341,7 @@ local function detect_execution_context()
     M.log("info", "Output log file:", LOG_FILE)
 end
 
--- --- MPV Event Hooks (Remaining events omitted for brevity, logic is the same) ---
+-- --- MPV Event Hooks ---
 
 function M.capture_and_log_pre_command(command)
     local final_time = get_safe_time_pos()
@@ -396,10 +376,26 @@ end
 function M.file_loaded()
     current_file_path = mp.get_property("path") or "N/A"
     local duration = get_safe_duration()
+    local filename = mp.get_property("filename") or ""
+    local fileclass = get_file_class(filename)
     
     M.log("info", "FILE_LOADED: Path:", current_file_path)
     M.log("info", "FILE_LOADED: Total duration is", duration, "s.")
     
+    -- --- VO FIX: Force video output for audio-only files (Final, Non-File I/O Fix) ---
+    if fileclass == "audio" and not mp.get_property_native("vid") then
+        -- Use options-add on the 'vo' property to load a virtual video output driver.
+        -- This is the Lua equivalent of --vo-add null, forcing the VO window open.
+        mp.commandv("options-add", "vo", "null") 
+        M.log("info", "AUDIO_FIX: Null VO driver loaded via options-add to stabilize input.")
+        
+        -- Since adding a VO driver might briefly interrupt playback, we ensure it resumes.
+        mp.add_timeout(0, function()
+            mp.command("set pause no") 
+        end)
+    end
+    -- --- END VO FIX ---
+
     if previous_file_duration > 0 then
         M.log("info", "CONTEXT: Previous file played for a max of", previous_file_duration, "s.")
     else
@@ -449,27 +445,32 @@ local ok, err = pcall(function()
     M.log("info", "EXECUTION: Observing chapter property.")
     mp.observe_property("chapter", "number", M.chapter_change)
 
-    -- 3. Key bindings
-    M.log("info", "EXECUTION: Setting key bindings.")
-    -- Added force=true to all key bindings for robustness
-    mp.add_key_binding("n", "user-skip-next", function() mp.command("playlist-next") end, {repeatable=false, force=true})
-    mp.add_key_binding("KP1", "start_cut", M.start_cut, {repeatable=false, force=true})
-    mp.add_key_binding("KP2", "end_cut", M.end_cut, {repeatable=false, force=true})
-    mp.add_key_binding("KP0", "snap_SNITCH", M.snap_SNITCH, {repeatable=true, force=true})
-    mp.add_key_binding("g", "goldKey", M.goldKey, {repeatable=true, force=true})
-    M.log("info", "EXECUTION: All key bindings set.")
-
-    -- This line must be set last, after all I/O, event registration, and key binding is complete.
-    script_is_loaded = true 
+    -- NEW: Defer key binding registration to the next event loop iteration (0ms delay)
+    M.log("info", "EXECUTION: Deferring key bindings to next event loop.")
     
-    M.log("info", "Script loaded successfully.")
-
+    mp.add_timeout(0, function()
+        
+        -- 3. Key bindings
+        M.log("info", "DEFERRED: Setting key bindings now (Final Robust Bindings).")
+        
+        -- Use anonymous functions to wrap every action for robust function reference
+        mp.add_key_binding("n", "user-skip-next", function() mp.command("playlist-next") end, {repeatable=false, force=true})
+        mp.add_key_binding("KP1", "start_cut", function() M.start_cut() end, {repeatable=false, force=true})
+        mp.add_key_binding("KP2", "end_cut", function() M.end_cut() end, {repeatable=false, force=true})
+        mp.add_key_binding("KP0", "snap_SNITCH", function() M.snap_SNITCH() end, {repeatable=true, force=true})
+        mp.add_key_binding("g", "goldKey", function() M.goldKey() end, {repeatable=true, force=true})
+        
+        M.log("info", "DEFERRED: All key bindings set successfully.")
+        
+        script_is_loaded = true 
+        M.log("info", "Script loaded successfully.")
+    end)
+    
 end)
 
 if not ok then
     local err_message = "SCRIPT LOAD ERROR: " .. tostring(err)
     msg.error(err_message)
-    -- Ensure error is written to file, regardless of script_is_loaded state
     local timestamp = os.date("%H:%M:%S")
     local log_message = timestamp .. " [ERROR] " .. err_message
     local log_handle, err = io.open(LOG_FILE, "a")
