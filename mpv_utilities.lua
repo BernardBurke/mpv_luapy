@@ -1,5 +1,5 @@
 -- mpv_utilities.lua
--- Final version with VO stabilization and keybinding registration moved to the most stable point.
+-- Final version with VO stabilization and recursion guard (Fix-and-Exit method).
 
 local M = {}
 
@@ -36,7 +36,7 @@ local current_file_path = "N/A"
 local g_start_second = 0 
 local script_is_loaded = false 
 local VO_FIX_NEEDED = false 
-local keybindings_set = false -- NEW: Flag to ensure keybindings are only registered once
+local keybindings_set = false 
 
 local VIDEO_EXTENSIONS = {
     ["mkv"] = true, ["mp4"] = true, ["avi"] = true, ["webm"] = true, 
@@ -324,6 +324,8 @@ function M.on_load_start(hook)
     
     if fileclass == "audio" then
         VO_FIX_NEEDED = true
+    else
+        VO_FIX_NEEDED = false
     end
 end
 
@@ -335,23 +337,23 @@ function M.post_file_load()
         -- If 'vid' is nil, there is no video stream (i.e., no cover art/VO window open)
         if not mp.get_property_native("vid") then
             
-            M.log("warn", "VO_FIX: No video stream detected. Input is unstable.")
+            M.log("warn", "VO_FIX: No video stream detected. Input is unstable. Initiating fix-and-exit.")
             
             -- Check if the Bash script file itself exists (essential safety check)
             if not EMBED_COVER_SCRIPT or not file_exists(EMBED_COVER_SCRIPT) then
                 M.log("error", "VO_FIX: Embed script not found. Path: " .. tostring(EMBED_COVER_SCRIPT))
-                send_OSD("VO Fix failed: Embed script missing.", 3)
+                send_OSD("VO Fix failed: Embed script missing. Cannot fix file.", 3)
             else
-                M.log("info", "VO_FIX: Embedding cover art via Bash script to stabilize input.")
-                send_OSD("Embedding cover art for stable input...", 3)
+                M.log("info", "VO_FIX: Embedding cover art via Bash script (asynchronous).")
+                send_OSD("Fixing audio: Embed cover art. Please restart MPV.", 3)
                 
-                -- Execute Bash script asynchronously to embed cover art into the file
+                -- Execute Bash script asynchronously (essential for not blocking the quit command)
                 os.execute("bash " .. EMBED_COVER_SCRIPT .. " \"" .. path .. "\" &")
 
-                -- Crucial: Reload the file to force mpv to recognize the new cover art stream
+                -- IMMEDIATE EXIT: Quit MPV so the user can reload the now-modified file.
                 mp.add_timeout(0.5, function()
-                    mp.command("loadfile \"" .. path .. "\" replace") 
-                    M.log("info", "VO_FIX: File reload command issued.")
+                    mp.command("quit") 
+                    M.log("info", "VO_FIX: Quitting MPV for user to reload fixed file.")
                 end)
             end
         end
@@ -379,7 +381,7 @@ local function detect_execution_context()
     M.log("info", "Output log file:", LOG_FILE)
 end
 
--- --- KEY BINDING SETUP FUNCTION (New Stable Location) ---
+-- --- KEY BINDING SETUP FUNCTION (Stable Location) ---
 local function setup_keybindings()
     if keybindings_set then return end 
 
@@ -394,6 +396,10 @@ local function setup_keybindings()
 
     keybindings_set = true
     M.log("info", "KEY_SETUP: All key bindings successfully registered.")
+    
+    -- Final mark as loaded only after all deferred actions are queued
+    script_is_loaded = true 
+    M.log("info", "Script loaded successfully.")
 end
 
 -- --- MPV Event Hooks (Standard) ---
@@ -476,10 +482,6 @@ local ok, err = pcall(function()
     M.log("info", "EXECUTION: Observing chapter property.")
     mp.observe_property("chapter", "number", M.chapter_change)
     
-    -- Mark script as loaded from the initial path
-    script_is_loaded = true 
-    M.log("info", "Script loaded successfully.")
-
 end)
 
 if not ok then
