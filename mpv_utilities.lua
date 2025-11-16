@@ -88,11 +88,25 @@ local function get_safe_duration()
     return d and math.floor(d) or 0
 end
 
-local function get_file_class(filename)
-    local ext_with_dot = filename:match("^.+(%..+)$")
+local function get_file_class(filepath)
+    if not filepath then return "unrecognised" end
+
+    -- First, check by file extension, which is fast.
+    local ext_with_dot = filepath:match("^.+(%..+)$")
     local ext = ext_with_dot and string.lower(ext_with_dot:sub(2))
     
-    if not ext then return "unrecognised" end
+    if not ext then
+        -- If no extension, check content for EDL header
+        local f = io.open(filepath, "rb")
+        if f then
+            local line = f:read("*l")
+            f:close()
+            if line and line:match("^# mpv EDL v0") then
+                return "edl"
+            end
+        end
+        return "unrecognised"
+    end
     
     if ext == "edl" then return "edl" 
     elseif VIDEO_EXTENSIONS[ext] then
@@ -100,7 +114,17 @@ local function get_file_class(filename)
     elseif AUDIO_EXTENSIONS[ext] then
         return "audio"
     end
-    
+
+    -- If extension is not recognized, as a last resort, check file content for EDL.
+    local f = io.open(filepath, "rb")
+    if f then
+        local line = f:read("*l")
+        f:close()
+        if line and line:match("^# mpv EDL v0") then
+            return "edl"
+        end
+    end
+
     return "unrecognised"
 end
 
@@ -165,8 +189,8 @@ end
 -- --- Cutting/EDL Functions ---
 
 local function valid_for_cutting()
-    local filename = mp.get_property("filename") or ""
-    local fileclass = get_file_class(filename)
+    local path = mp.get_property("path") or ""
+    local fileclass = get_file_class(path)
     if fileclass == "video" or fileclass == "audio" then
         return true
     else
@@ -223,14 +247,13 @@ end
 -- --- New Functionality: Snap and Gold Key (Simplified) ---
 
 function M.snap_SNITCH()
-    local filename = mp.get_property("filename")
     local path = mp.get_property("path")
-    local fileclass = get_file_class(filename)
+    local fileclass = get_file_class(path)
     
     M.log("info", "SNAP: Snapping file:", path)
 
     if fileclass == "unrecognised" then
-        M.log("warn", "SNAP: Unrecognized file type for snap:", filename)
+        M.log("warn", "SNAP: Unrecognized file type for snap:", path)
         send_OSD("Unrecognised file type: "..path, 2)
         return
     end
@@ -272,9 +295,8 @@ function M.snap_SNITCH()
 end
 
 function M.goldKey()
-    local filename = mp.get_property("filename")
     local path = mp.get_property("path")
-    local fileclass = get_file_class(filename)
+    local fileclass = get_file_class(path)
     local record = nil
     local gold_file = SNITCH_DIR and (SNITCH_DIR.."/goldVault.edl") or nil
 
@@ -319,8 +341,8 @@ end
 
 -- --- VO STABILITY HOOK (The final fix for keypad input) ---
 function M.on_load_start(hook)
-    local filename = mp.get_property("filename") or ""
-    local fileclass = get_file_class(filename)
+    local path = mp.get_property("path") or ""
+    local fileclass = get_file_class(path)
     
     if fileclass == "audio" then
         VO_FIX_NEEDED = true
