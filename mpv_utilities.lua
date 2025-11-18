@@ -21,6 +21,7 @@ local LOG_FILE = "/tmp/mpv_history_logger.log"
 
 -- REQUIRED ENVIRONMENT VARIABLES
 local SNITCH_DIR = os.getenv("BCHU")
+local HI_DIR = os.getenv("HI") 
 local EDL_SNITCH_JOURNAL = SNITCH_DIR and (SNITCH_DIR.."/edl_journal.edl") or nil
 local NON_EDL_JOURNAL = SNITCH_DIR and (SNITCH_DIR.."/m3u_journal.m3u") or nil
 local DITCHED_FILE_PATH = os.getenv("EDLSRC") and (os.getenv("EDLSRC").."/ditched.txt") or nil
@@ -156,10 +157,30 @@ local function Split(inputstr, sep)
     return t
 end
 
--- Simplified stub for EDL record retrieval (requires reading and parsing the file)
+-- Reads an EDL file and retrieves a specific record by its line number (0-indexed chapter).
 local function get_the_edl_record(edl_path, chapter_number)
-    M.log("warn", "STUB: Returning mock EDL record for path:", edl_path)
-    return edl_path .. ",10,60" 
+    M.log("info", "EDL_READ: Reading record " .. tostring(chapter_number) .. " from: " .. edl_path)
+
+    if not edl_path or not file_exists(edl_path) then
+        M.log("error", "EDL_READ: File not found or path is nil:", edl_path)
+        return nil
+    end
+
+    local lines = {}
+    local ok, err = pcall(function()
+        for line in io.lines(edl_path) do
+            if not line:match("^#") then
+                table.insert(lines, line)
+            end
+        end
+    end)
+
+    if not ok then
+        M.log("error", "EDL_READ: Failed to read file content:", edl_path, "Error:", err)
+        return nil
+    end
+
+    return lines[chapter_number + 1]
 end
 
 -- Re-created from original code
@@ -298,11 +319,11 @@ function M.goldKey()
     local path = mp.get_property("path")
     local fileclass = get_file_class(path)
     local record = nil
-    local gold_file = SNITCH_DIR and (SNITCH_DIR.."/goldVault.edl") or nil
+    local gold_file = HI_DIR and (HI_DIR.."/goldVaultCurrent.edl") or nil
 
     if not gold_file then
-        M.log("error", "GOLD FAILED: BCHU (SNITCH_DIR) not set.")
-        send_OSD("Gold Key failed: SNITCH_DIR missing.", 3)
+        M.log("error", "GOLD FAILED: HI_DIR (SNITCH_DIR) not set.")
+        send_OSD("Gold Key failed: HI_DIR missing.", 3)
         return
     end
 
@@ -329,10 +350,10 @@ function M.goldKey()
     if goldHandler then
         goldHandler:write(record)
         goldHandler:close()
-        send_OSD("Gold Keyed: wrote record to goldVault.edl", 2)
+        send_OSD("Gold Keyed: wrote record to goldVaultCurrent.edl", 2)
         M.log("info", "GOLD: Wrote record:", record)
     else
-        M.log("error", "GOLD FAILED: Cannot open goldVault.edl")
+        M.log("error", "GOLD FAILED: Cannot open goldVaultCurrent.edl")
         send_OSD("Gold Key failed: cannot write file", 3)
     end
     
