@@ -392,12 +392,27 @@ function M.post_file_load()
                 
                 -- Execute Bash script asynchronously (essential for not blocking the quit command)
                 os.execute("bash " .. EMBED_COVER_SCRIPT .. " \"" .. path .. "\" &")
+                if os.getenv("EMBED_COVER") == "1" then
+                    M.log("info", "VO_FIX: Embedding cover art via Bash script (asynchronous).")
+                    send_OSD("Fixing audio: Embed cover art. Please restart MPV.", 3)
+                    
+                    -- Execute Bash script asynchronously (essential for not blocking the quit command)
+                    os.execute("bash " .. EMBED_COVER_SCRIPT .. " \"" .. path .. "\" &")
 
                 -- IMMEDIATE EXIT: Quit MPV so the user can reload the now-modified file.
                 mp.add_timeout(0.5, function()
                     mp.command("quit") 
                     M.log("info", "VO_FIX: Quitting MPV for user to reload fixed file.")
                 end)
+                    -- IMMEDIATE EXIT: Quit MPV so the user can reload the now-modified file.
+                    mp.add_timeout(0.5, function()
+                        mp.command("quit") 
+                        M.log("info", "VO_FIX: Quitting MPV for user to reload fixed file.")
+                    end)
+                else
+                    M.log("warn", "VO_FIX: EMBED_COVER is not set to 1. Skipping cover art embedding.")
+                    send_OSD("VO Fix skipped: EMBED_COVER not enabled.", 3)
+                end
             end
         end
         VO_FIX_NEEDED = false -- Reset flag regardless of outcome
