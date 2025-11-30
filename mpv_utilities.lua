@@ -360,6 +360,30 @@ function M.goldKey()
     mp.command("playlist-next")
 end
 
+function M.deleteMe()
+    local filename = mp.get_property_native("path")
+    if not filename then
+        M.log("error", "DELETE_ME: Could not get current file path.")
+        send_OSD("Delete Me failed: No path.", 3)
+        return
+    end
+
+    M.log("info", "DELETE_ME: Adding '"..filename.."' to /tmp/deleteMe.sh")
+    
+    local delete_handle, err = io.open('/tmp/deleteMe.sh', "a")
+    if not delete_handle then
+        M.log("error", "DELETE_ME: Failed to open /tmp/deleteMe.sh. Error: " .. tostring(err))
+        send_OSD("Delete Me failed: Cannot write to /tmp/deleteMe.sh", 3)
+        return
+    end
+    
+    local command_to_write = "if [ -f '"..filename.."' ]; then rm -v '"..filename.."'; fi\n"
+    delete_handle:write(command_to_write)
+    delete_handle:close()
+    send_OSD("Marked for deletion: "..filename, 2)
+    mp.command("playlist-next")
+end
+
 -- --- VO STABILITY HOOK (The final fix for keypad input) ---
 function M.on_load_start(hook)
     local path = mp.get_property("path") or ""
@@ -451,6 +475,7 @@ local function setup_keybindings()
     mp.add_key_binding("KP2", "end_cut", function() M.end_cut() end, {repeatable=false, force=true})
     mp.add_key_binding("KP0", "snap_SNITCH", function() M.snap_SNITCH() end, {repeatable=true, force=true})
     mp.add_key_binding("g", "goldKey", function() M.goldKey() end, {repeatable=true, force=true})
+    mp.add_key_binding("Ctrl+DEL", "deleteMe", function() M.deleteMe() end, {repeatable=false, force=true})
 
     keybindings_set = true
     M.log("info", "KEY_SETUP: All key bindings successfully registered.")
