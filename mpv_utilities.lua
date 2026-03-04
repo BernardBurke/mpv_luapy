@@ -252,7 +252,6 @@ function M.goldKey()
     mp.command("playlist-next")
 end
 
-<<<<<<< HEAD
 function M.deleteMe()
     local filename = mp.get_property_native("path")
     if not filename then
@@ -278,10 +277,6 @@ function M.deleteMe()
 end
 
 -- --- VO STABILITY HOOK (The final fix for keypad input) ---
-=======
--- --- VO Stability & Hooks ---
-
->>>>>>> ad897d2 (full paths in edl cutting)
 function M.on_load_start(hook)
     VO_FIX_NEEDED = (get_file_class(mp.get_property("path")) == "audio")
 end
@@ -298,7 +293,6 @@ end
 
 local function setup_keybindings()
     if keybindings_set then return end 
-<<<<<<< HEAD
 
     M.log("info", "KEY_SETUP: Executing final key binding setup.")
 
@@ -316,14 +310,6 @@ local function setup_keybindings()
     -- Final mark as loaded only after all deferred actions are queued
     script_is_loaded = true 
     M.log("info", "Script loaded successfully.")
-=======
-    mp.add_key_binding("n", "user-skip-next", function() mp.command("playlist-next") end)
-    mp.add_key_binding("KP1", "start_cut", function() M.start_cut() end)
-    mp.add_key_binding("KP2", "end_cut", function() M.end_cut() end)
-    mp.add_key_binding("KP0", "snap_SNITCH", function() M.snap_SNITCH() end)
-    mp.add_key_binding("g", "goldKey", function() M.goldKey() end)
-    keybindings_set, script_is_loaded = true, true
->>>>>>> ad897d2 (full paths in edl cutting)
 end
 
 function M.file_loaded()
