@@ -293,23 +293,12 @@ end
 
 local function setup_keybindings()
     if keybindings_set then return end 
-
-    M.log("info", "KEY_SETUP: Executing final key binding setup.")
-
-    -- 3. Key bindings
-    mp.add_key_binding("n", "user-skip-next", function() mp.command("playlist-next") end, {repeatable=false, force=true})
-    mp.add_key_binding("KP1", "start_cut", function() M.start_cut() end, {repeatable=false, force=true})
-    mp.add_key_binding("KP2", "end_cut", function() M.end_cut() end, {repeatable=false, force=true})
-    mp.add_key_binding("KP0", "snap_SNITCH", function() M.snap_SNITCH() end, {repeatable=true, force=true})
-    mp.add_key_binding("g", "goldKey", function() M.goldKey() end, {repeatable=true, force=true})
-    mp.add_key_binding("Ctrl+DEL", "deleteMe", function() M.deleteMe() end, {repeatable=false, force=true})
-
-    keybindings_set = true
-    M.log("info", "KEY_SETUP: All key bindings successfully registered.")
-    
-    -- Final mark as loaded only after all deferred actions are queued
-    script_is_loaded = true 
-    M.log("info", "Script loaded successfully.")
+    mp.add_key_binding("n", "user-skip-next", function() mp.command("playlist-next") end)
+    mp.add_key_binding("KP1", "start_cut", function() M.start_cut() end)
+    mp.add_key_binding("KP2", "end_cut", function() M.end_cut() end)
+    mp.add_key_binding("KP0", "snap_SNITCH", function() M.snap_SNITCH() end)
+    mp.add_key_binding("g", "goldKey", function() M.goldKey() end)
+    keybindings_set, script_is_loaded = true, true
 end
 
 function M.file_loaded()
