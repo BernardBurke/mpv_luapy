@@ -84,14 +84,33 @@ local function get_safe_duration()
 end
 
 local function get_file_class(filepath)
-    if not filepath then return "unrecognised" end
-    local ext = filepath:match("^.+(%..+)$")
-    ext = ext and string.lower(ext:sub(2))
-    
-    if ext == "edl" then return "edl" 
-    elseif VIDEO_EXTENSIONS[ext] then return "video"
-    elseif AUDIO_EXTENSIONS[ext] then return "audio"
+    if not filepath or filepath == "" then return "unrecognised" end
+
+    -- 1. Fast Extension Check
+    local ext = filepath:match("%.([^%.]+)$")
+    if ext then
+        ext = ext:lower()
+        if ext == "edl" then return "edl" end
+        if VIDEO_EXTENSIONS[ext] then return "video" end
+        if AUDIO_EXTENSIONS[ext] then return "audio" end
     end
+
+    -- 2. Single-pass Content Check (The "Native" Fallback)
+    -- If we get here, the extension is missing or unknown.
+    local f = io.open(filepath, "rb")
+    if f then
+        local first_line = f:read("*l") or ""
+        f:close()
+
+        -- Check for EDL header
+        if first_line:find("^# mpv EDL v0") then
+            return "edl"
+        end
+        
+        -- Optional: In Linux, you could use a pipe to 'file -i' 
+        -- but that's overkill for a Lua script.
+    end
+
     return "unrecognised"
 end
 
@@ -228,27 +247,47 @@ function M.snap_SNITCH()
 end
 
 function M.goldKey()
-    local full_path = get_full_path()
-    if not full_path then return end
+    local path = mp.get_property("path")
+    local fileclass = get_file_class(path)
+    local record = nil
     local gold_file = HI_DIR and (HI_DIR.."/goldVaultCurrent.edl") or nil
-    if not gold_file then return end
+
+    if not gold_file then
+        M.log("error", "GOLD FAILED: HI_DIR (SNITCH_DIR) not set.")
+        send_OSD("Gold Key failed: HI_DIR missing.", 3)
+        return
+    end
 
     create_edl_if_missing(gold_file)
-    local record = nil
-    
-    if get_file_class(full_path) == "edl" then
-        local edl_record = get_the_edl_record(mp.get_property("path"), mp.get_property_native("chapter") or 0)
-        if edl_record then record = edl_record .. "\n" end
+
+    if fileclass == "edl" then
+        local chapter = mp.get_property_native("chapter")
+        local record_number = chapter or 0
+        local edl_record = get_the_edl_record(path, record_number)
+        
+        local fnam = Split(edl_record, ",")
+        local file_name_only = fnam[1]
+        local start_second = fnam[2]
+        local llength = fnam[3]
+
+        record = file_name_only..","..start_second..","..llength.."\n"
     else
-        local start = get_safe_time_pos()
-        record = string.format("%s,%d,%d\n", full_path, start, get_safe_duration() - start)
+        M.log("warn", "GOLD: Cannot use Gold Key on non-EDL file class:", fileclass)
+        send_OSD("Gold Key requires EDL context.", 2)
+        return
     end
 
-    if record then
-        local h = io.open(gold_file, "a")
-        if h then h:write(record) h:close() end
-        send_OSD("Gold Keyed", 2)
+    local goldHandler = io.open(gold_file,"a")
+    if goldHandler then
+        goldHandler:write(record)
+        goldHandler:close()
+        send_OSD("Gold Keyed: wrote record to goldVaultCurrent.edl", 2)
+        M.log("info", "GOLD: Wrote record:", record)
+    else
+        M.log("error", "GOLD FAILED: Cannot open goldVaultCurrent.edl")
+        send_OSD("Gold Key failed: cannot write file", 3)
     end
+    
     mp.command("playlist-next")
 end
 
