@@ -1,5 +1,6 @@
 -- mpv_utilities.lua
 -- Robust version: Absolute Paths, Auto-Directory Creation, and EDL-aware Snapping.
+-- (Cleaned up: Removed embed_cover workaround, using force-window natively instead)
 
 local M = {}
 
@@ -23,7 +24,6 @@ local SNITCH_DIR = os.getenv("BCHU")
 local HI_DIR = os.getenv("HI") 
 local MPVL_DIR_RAW = os.getenv("MPVL") or ""
 local MPVL_DIR = MPVL_DIR_RAW:match("(.+[^/])$") or MPVL_DIR_RAW 
-local EMBED_COVER_SCRIPT = MPVL_DIR and (MPVL_DIR.."/embed_cover.sh") or nil
 
 -- Internal State Variables
 local execution_context = "UNKNOWN"
@@ -31,7 +31,6 @@ local previous_file_duration = 0
 local current_file_path = "N/A"
 local g_start_second = 0 
 local script_is_loaded = false 
-local VO_FIX_NEEDED = false 
 local keybindings_set = false 
 
 local VIDEO_EXTENSIONS = {
@@ -96,7 +95,6 @@ local function get_file_class(filepath)
     end
 
     -- 2. Single-pass Content Check (The "Native" Fallback)
-    -- If we get here, the extension is missing or unknown.
     local f = io.open(filepath, "rb")
     if f then
         local first_line = f:read("*l") or ""
@@ -106,9 +104,6 @@ local function get_file_class(filepath)
         if first_line:find("^# mpv EDL v0") then
             return "edl"
         end
-        
-        -- Optional: In Linux, you could use a pipe to 'file -i' 
-        -- but that's overkill for a Lua script.
     end
 
     return "unrecognised"
@@ -253,7 +248,7 @@ function M.goldKey()
     local gold_file = HI_DIR and (HI_DIR.."/goldVaultCurrent.edl") or nil
 
     if not gold_file then
-        M.log("error", "GOLD FAILED: HI_DIR (SNITCH_DIR) not set.")
+        M.log("error", "GOLD FAILED: HI_DIR not set.")
         send_OSD("Gold Key failed: HI_DIR missing.", 3)
         return
     end
@@ -315,21 +310,7 @@ function M.deleteMe()
     mp.command("playlist-next")
 end
 
--- --- VO STABILITY HOOK (The final fix for keypad input) ---
-function M.on_load_start(hook)
-    VO_FIX_NEEDED = (get_file_class(mp.get_property("path")) == "audio")
-end
-
-function M.post_file_load()
-    if VO_FIX_NEEDED and not mp.get_property_native("vid") then
-        if EMBED_COVER_SCRIPT and file_exists(EMBED_COVER_SCRIPT) then
-            os.execute("bash " .. EMBED_COVER_SCRIPT .. " \"" .. mp.get_property("path") .. "\" &")
-            mp.add_timeout(0.5, function() mp.command("quit") end)
-        end
-    end
-    VO_FIX_NEEDED = false
-end
-
+-- --- Keybindings ---
 local function setup_keybindings()
     if keybindings_set then return end 
     mp.add_key_binding("n", "user-skip-next", function() mp.command("playlist-next") end)
@@ -341,7 +322,6 @@ local function setup_keybindings()
 end
 
 function M.file_loaded()
-    M.post_file_load() 
     if not keybindings_set then mp.add_timeout(0, setup_keybindings) end
 end
 
@@ -349,7 +329,9 @@ end
 
 pcall(function()
     if MPVL_DIR_RAW ~= "" then
-        mp.add_hook("on_load", 90, M.on_load_start) 
+        -- Force a window to open so numpad bindings work on audio-only files natively
+        mp.set_property("force-window", "yes")
+        
         mp.register_event("file-loaded", M.file_loaded)
         mp.register_event("end-file", function(event) 
             previous_file_duration = (event.reason == "eof") and get_safe_duration() or get_safe_time_pos() 
