@@ -318,6 +318,8 @@ local function setup_keybindings()
     mp.add_key_binding("KP2", "end_cut", function() M.end_cut() end)
     mp.add_key_binding("KP0", "snap_SNITCH", function() M.snap_SNITCH() end)
     mp.add_key_binding("g", "goldKey", function() M.goldKey() end)
+    -- add control + DEL for deleteMe
+    mp.add_key_binding("ctrl+DEL", "deleteMe", function() M.deleteMe() end)
     keybindings_set, script_is_loaded = true, true
 end
 
