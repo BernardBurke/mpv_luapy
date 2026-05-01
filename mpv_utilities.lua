@@ -35,7 +35,7 @@ local keybindings_set = false
 
 local VIDEO_EXTENSIONS = {
     ["mkv"] = true, ["mp4"] = true, ["avi"] = true, ["webm"] = true, 
-    ["wmv"] = true, ["mov"] = true, ["flv"] = true, ["ts"] = true
+    ["wmv"] = true, ["mov"] = true, ["flv"] = true, ["ts"] = true, ["m4v"] = true
 }
 local AUDIO_EXTENSIONS = {
     ["mp3"] = true, ["m4a"] = true, ["flac"] = true, ["wav"] = true, 
