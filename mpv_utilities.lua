@@ -241,6 +241,21 @@ function M.snap_SNITCH()
     end
 end
 
+-- Helper to safely write records to an EDL file and ensure headers exist
+local function write_edl_record(filepath, record)
+    if not filepath or filepath == "" then return false end
+    
+    create_edl_if_missing(filepath)
+    
+    local handle = io.open(filepath, "a")
+    if handle then
+        handle:write(record)
+        handle:close()
+        return true
+    end
+    return false
+end
+
 function M.goldKey()
     local path = mp.get_property("path")
     local fileclass = get_file_class(path)
@@ -252,8 +267,6 @@ function M.goldKey()
         send_OSD("Gold Key failed: HI_DIR missing.", 3)
         return
     end
-
-    create_edl_if_missing(gold_file)
 
     if fileclass == "edl" then
         local chapter = mp.get_property_native("chapter")
@@ -272,15 +285,23 @@ function M.goldKey()
         return
     end
 
-    local goldHandler = io.open(gold_file,"a")
-    if goldHandler then
-        goldHandler:write(record)
-        goldHandler:close()
+    -- Write to primary gold file
+    if write_edl_record(gold_file, record) then
         send_OSD("Gold Keyed: wrote record to goldVaultCurrent.edl", 2)
         M.log("info", "GOLD: Wrote record:", record)
     else
         M.log("error", "GOLD FAILED: Cannot open goldVaultCurrent.edl")
         send_OSD("Gold Key failed: cannot write file", 3)
+    end
+
+    -- Write to daily /tmp journal
+    local daily_file = string.format("/tmp/edl_journal_%s.edl", os.date("%Y-%m-%d"))
+    write_edl_record(daily_file, record)
+
+    -- Write to env var journal target if specified
+    local env_journal = os.getenv("EDL_GOLD_JOURNAL")
+    if env_journal and env_journal ~= "" then
+        write_edl_record(env_journal, record)
     end
     
     mp.command("playlist-next")
